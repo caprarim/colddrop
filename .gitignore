@@ -1,0 +1,16 @@
+node_modules/
+dist/
+src-tauri/target/
+src-tauri/gen/
+mobile/.gradle/
+mobile/build/
+mobile/app/build/
+mobile/app/assets/
+mobile/local.properties
+mobile/signing.properties
+*.jks
+*.keystore
+*.log
+.env*
+!.env.example
+
