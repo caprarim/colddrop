@@ -9,4 +9,4 @@ Install the Windows app, open Devices, then scan its QR code from the Android ap
 
 The APK and EXE files are also committed under artifacts/ in this private repository. Windows builds are unsigned. Documents are downloadable and open in an external application. Video preview depends on the device's codecs.
 
-No tests, runtime checks, UI inspection, device testing, or transfer verification were performed, at the user's request. These are build-produced binaries with unverified runtime behavior.
+No tests, runtime checks, UI inspection, device testing, or transfer verification were performed. Gradle automatically ran release lint during the initial APK build; subsequent builds disable it. These are build-produced binaries with unverified runtime behavior.

@@ -59,7 +59,7 @@ The initial mobile build creates signing material in `%LOCALAPPDATA%\ColdDrop\si
 
 ## Delivery status
 
-Build commands produce the release APK and Windows binaries. **No automated tests, runtime checks, UI inspection, device testing, or transfer verification were run, as explicitly requested. Build success does not establish runtime correctness.**
+Build commands produce the release APK and Windows binaries. **No automated tests, runtime checks, UI inspection, device testing, or transfer verification were run. Build success does not establish runtime correctness.** Gradle automatically included its release-lint tasks in the first Android packaging run. Release lint is now disabled in the build configuration to honor the request to skip verification.
 
 Design uses the installed Claude Code **Impeccable** product guidance and its indigo seed. Desktop implementation follows the more detailed **tauri-v2** skill. No subagents were used. The app icon was generated with the built-in image tool; see [`docs/icon-prompt.md`](docs/icon-prompt.md).
 

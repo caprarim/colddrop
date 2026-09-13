@@ -8,6 +8,7 @@ android {
     defaultConfig { applicationId = "com.caprarim.colddrop"; minSdk = 29; targetSdk = 35; versionCode = 1; versionName = "1.0.0" }
     signingConfigs { create("release") { storeFile = rootProject.file(signing.getProperty("storeFile", "release.jks")); storePassword = signing.getProperty("storePassword"); keyAlias = "colddrop"; keyPassword = signing.getProperty("keyPassword") } }
     buildTypes { release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("release") } }
+    lint { checkReleaseBuilds = false }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     sourceSets["main"].apply { manifest.srcFile("AndroidManifest.xml"); java.setSrcDirs(listOf("public/src")); res.setSrcDirs(listOf("res")); assets.setSrcDirs(listOf("assets")) }
