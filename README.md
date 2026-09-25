@@ -9,8 +9,8 @@ A shared file gallery for Android and Windows, built for large videos. Add origi
 The binaries are committed in [`artifacts`](artifacts/) and attached to the private GitHub release:
 
 - [`ColdDrop-1.2.0.apk`](artifacts/ColdDrop-1.2.0.apk): Android 10 or newer. Download on the phone and allow installation from the browser or file manager when Android asks.
-- [`ColdDrop-1.1.0-setup.exe`](artifacts/ColdDrop-1.1.0-setup.exe): Windows installer, x64. WebView2 is installed by the installer if needed.
-- [`ColdDrop-1.1.0-portable.exe`](artifacts/ColdDrop-1.1.0-portable.exe): standalone Windows app; requires the WebView2 runtime already installed.
+- [`ColdDrop-1.2.0-setup.exe`](artifacts/ColdDrop-1.2.0-setup.exe): Windows installer, x64. WebView2 is installed by the installer if needed.
+- [`ColdDrop-1.2.0-portable.exe`](artifacts/ColdDrop-1.2.0-portable.exe): standalone Windows app; requires the WebView2 runtime already installed.
 
 The Windows executables are not code-signed. The APK is signed with a locally generated private release key; that key and its passwords are excluded from Git.
 
