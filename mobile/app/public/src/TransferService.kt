@@ -80,7 +80,7 @@ class TransferService : Service() {
         job.put("status", "uploading"); TransferStore.put(this, job)
         var id = job.optString("uploadId")
         if (id.isEmpty()) {
-            val payload = JSONObject().put("name", job.getString("name")).put("size", job.getLong("size")).put("source", "Phone").toString().toByteArray(Charsets.UTF_8)
+            val payload = JSONObject().put("name", job.getString("name")).put("size", job.getLong("size")).put("source", "Phone").put("category", job.optString("category")).toString().toByteArray(Charsets.UTF_8)
             id = Network.request(job, "/api/uploads", "POST", payload).getString("id")
             job.put("uploadId", id); TransferStore.put(this, job)
         }

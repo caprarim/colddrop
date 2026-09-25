@@ -8,7 +8,7 @@ A shared file gallery for Android and Windows, built for large videos. Add origi
 
 The binaries are committed in [`artifacts`](artifacts/) and attached to the private GitHub release:
 
-- [`ColdDrop-1.1.0.apk`](artifacts/ColdDrop-1.1.0.apk): Android 10 or newer. Download on the phone and allow installation from the browser or file manager when Android asks.
+- [`ColdDrop-1.2.0.apk`](artifacts/ColdDrop-1.2.0.apk): Android 10 or newer. Download on the phone and allow installation from the browser or file manager when Android asks.
 - [`ColdDrop-1.1.0-setup.exe`](artifacts/ColdDrop-1.1.0-setup.exe): Windows installer, x64. WebView2 is installed by the installer if needed.
 - [`ColdDrop-1.1.0-portable.exe`](artifacts/ColdDrop-1.1.0-portable.exe): standalone Windows app; requires the WebView2 runtime already installed.
 
@@ -22,6 +22,7 @@ The Windows executables are not code-signed. The APK is signed with a locally ge
 4. Tap **Add files** on either device. Desktop also accepts dropped files. The new gallery entry appears when the upload starts; previews and downloads become available when the original finishes transferring.
 5. Tap a thumbnail to preview. Images support tap-to-zoom, swipe between files, and previous/next controls. Videos support playback and seeking. Use **Download** to choose where to save a copy.
 6. To rename a file, open it and tap the pencil next to its name, type the new name, and press Enter. On the PC, F2 also starts renaming. The new name shows on both devices and is used for downloads.
+7. Group files with categories. In any tab, tap **New category** and name it (for example, hooks). Open a category and use **Add here** to put new files straight in, or open any file and tap the folder button to move it into a category. Deleting a category keeps its files in your library.
 
 Closing the Windows window hides it in the system tray and leaves sharing active. **Quit ColdDrop** in the tray menu stops the server. The app does not start automatically with Windows.
 

@@ -24,13 +24,18 @@ fn clean_name(raw: &str) -> ApiResult<String> {
 pub struct FileRecord {
     pub id: String, pub name: String, pub size: u64, pub mime: String, pub created: u64,
     pub source: String, pub ready: bool, #[serde(default)] pub thumbnail: bool,
+    #[serde(default)] pub category: Option<String>,
 }
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Category { pub id: String, pub name: String, pub created: u64 }
 #[derive(Serialize)]
-struct Listing { files: Vec<FileRecord> }
+struct Listing { files: Vec<FileRecord>, categories: Vec<Category> }
 #[derive(Deserialize)]
-struct CreateFile { name: String, size: u64, #[serde(default)] source: String }
+pub struct CreateFile { pub name: String, pub size: u64, #[serde(default)] pub source: String, #[serde(default)] pub category: Option<String> }
 #[derive(Deserialize)]
-struct Rename { name: String }
+struct Naming { name: String }
+#[derive(Deserialize)]
+struct Change { #[serde(default)] name: Option<String>, #[serde(default)] category: Option<String> }
 #[derive(Deserialize)]
 struct Access { #[serde(default)] offset: u64, #[serde(default)] download: bool }
 #[derive(Serialize)]
@@ -39,6 +44,7 @@ struct Upload { id: String, offset: u64, ready: bool }
 pub struct Library {
     pub root: PathBuf, pub key: String,
     files: RwLock<HashMap<String, FileRecord>>,
+    categories: RwLock<Vec<Category>>,
     locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     events: broadcast::Sender<String>,
 }
@@ -53,6 +59,7 @@ impl Library {
             fs::write(&key_file, &key).await?; key
         };
         if key.len() != 64 { return Err("Invalid device key. Restore the library's device-key file.".into()); }
+        let categories: Vec<Category> = match fs::read(root.join("categories.json")).await { Ok(data) => serde_json::from_slice(&data).unwrap_or_default(), Err(_) => Vec::new() };
         let mut files = HashMap::new();
         let mut entries = fs::read_dir(root.join("metadata")).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -62,10 +69,11 @@ impl Library {
             let binary = root.join("files").join(format!("{}.bin", item.id));
             if let Ok(meta) = fs::metadata(binary).await { item.ready = meta.len() == item.size; }
             item.thumbnail = root.join("thumbnails").join(format!("{}.jpg", item.id)).exists();
+            if item.category.as_ref().is_some_and(|c| !categories.iter().any(|x| &x.id == c)) { item.category = None; }
             files.insert(item.id.clone(), item);
         }
         let (events, _) = broadcast::channel(256);
-        Ok(Arc::new(Self { root, key, files: RwLock::new(files), locks: Mutex::new(HashMap::new()), events }))
+        Ok(Arc::new(Self { root, key, files: RwLock::new(files), categories: RwLock::new(categories), locks: Mutex::new(HashMap::new()), events }))
     }
     pub fn binary(&self, id: &str) -> PathBuf { self.root.join("files").join(format!("{id}.bin")) }
     fn partial(&self, id: &str) -> PathBuf { self.root.join("files").join(format!("{id}.part")) }
@@ -79,6 +87,13 @@ impl Library {
         self.changed(); Ok(())
     }
     fn changed(&self) { let _ = self.events.send("gallery".into()); }
+    async fn has_category(&self, id: &str) -> bool { self.categories.read().await.iter().any(|c| c.id == id) }
+    async fn save_categories(&self, list: &[Category]) -> ApiResult<()> {
+        let path = self.root.join("categories.json");
+        let temp = path.with_extension("tmp");
+        fs::write(&temp, serde_json::to_vec(list).map_err(ioerr)?).await.map_err(ioerr)?;
+        fs::rename(temp, path).await.map_err(ioerr)
+    }
     async fn record(&self, id: &str) -> ApiResult<FileRecord> {
         self.files.read().await.get(id).cloned().ok_or((StatusCode::NOT_FOUND, "File not found".into()))
     }
@@ -86,11 +101,12 @@ impl Library {
         let file = self.record(id).await?;
         if !file.ready { return Err((StatusCode::CONFLICT, "This file is still transferring".into())); } Ok(file)
     }
-    async fn create(&self, args: CreateFile) -> ApiResult<FileRecord> {
+    pub async fn create(&self, args: CreateFile) -> ApiResult<FileRecord> {
         let name = clean_name(&args.name)?;
+        let category = match args.category.filter(|c| !c.is_empty()) { Some(c) if self.has_category(&c).await => Some(c), _ => None };
         if args.size > 16 * 1024 * 1024 * 1024 * 1024u64 { return Err(bad("Maximum file size is 16 TiB")); }
         let mime = mime_guess::from_path(&name).first_or_octet_stream().to_string();
-        let record = FileRecord { id: uuid::Uuid::new_v4().to_string(), name, size: args.size, mime, created: now(), source: if args.source == "PC" { "PC" } else { "Phone" }.into(), ready: false, thumbnail: false };
+        let record = FileRecord { id: uuid::Uuid::new_v4().to_string(), name, size: args.size, mime, created: now(), source: if args.source == "PC" { "PC" } else { "Phone" }.into(), ready: false, thumbnail: false, category };
         fs::File::create(self.partial(&record.id)).await.map_err(ioerr)?;
         self.persist(record.clone()).await?; Ok(record)
     }
@@ -119,18 +135,55 @@ pub async fn serve(state: Arc<Library>, listener: tokio::net::TcpListener) -> st
         .route("/api/uploads", post(create))
         .route("/api/uploads/{id}", get(status).put(chunk))
         .route("/api/uploads/{id}/complete", post(complete))
-        .route("/api/files/{id}", patch(rename))
+        .route("/api/files/{id}", patch(update))
+        .route("/api/categories", post(add_category))
+        .route("/api/categories/{id}", patch(rename_category).delete(remove_category))
         .route("/api/files/{id}/thumbnail", put(thumbnail).get(get_thumbnail))
         .route("/api/files/{id}/content", get(content))
         .route("/api/events", get(events))
         .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
-        .layer(CorsLayer::new().allow_origin(origins).allow_private_network(true).allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::PATCH, axum::http::Method::OPTIONS]).allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE]).expose_headers([header::CONTENT_LENGTH, header::CONTENT_RANGE, header::ACCEPT_RANGES]).max_age(Duration::from_secs(3600)))
+        .layer(CorsLayer::new().allow_origin(origins).allow_private_network(true).allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::PATCH, axum::http::Method::DELETE, axum::http::Method::OPTIONS]).allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE]).expose_headers([header::CONTENT_LENGTH, header::CONTENT_RANGE, header::ACCEPT_RANGES]).max_age(Duration::from_secs(3600)))
         .with_state(state);
     axum::serve(listener, app).await
 }
 async fn list(State(s): State<Arc<Library>>) -> Json<Listing> {
-    let mut files: Vec<_> = s.files.read().await.values().cloned().collect(); files.sort_by_key(|f| std::cmp::Reverse(f.created)); Json(Listing { files })
+    let mut files: Vec<_> = s.files.read().await.values().cloned().collect(); files.sort_by_key(|f| std::cmp::Reverse(f.created));
+    let categories = s.categories.read().await.clone();
+    Json(Listing { files, categories })
+}
+async fn add_category(State(s): State<Arc<Library>>, Json(args): Json<Naming>) -> ApiResult<Json<Category>> {
+    let name = clean_name(&args.name)?;
+    let mut list = s.categories.write().await;
+    if list.iter().any(|c| c.name.to_lowercase() == name.to_lowercase()) { return Err((StatusCode::CONFLICT, "You already have a category with that name".into())); }
+    let category = Category { id: uuid::Uuid::new_v4().to_string(), name, created: now() };
+    let mut next = list.clone(); next.push(category.clone());
+    s.save_categories(&next).await?; *list = next; drop(list);
+    s.changed(); Ok(Json(category))
+}
+async fn rename_category(State(s): State<Arc<Library>>, Path(id): Path<String>, Json(args): Json<Naming>) -> ApiResult<Json<Category>> {
+    let name = clean_name(&args.name)?;
+    let mut list = s.categories.write().await;
+    if list.iter().any(|c| c.id != id && c.name.to_lowercase() == name.to_lowercase()) { return Err((StatusCode::CONFLICT, "You already have a category with that name".into())); }
+    let mut next = list.clone();
+    let category = next.iter_mut().find(|c| c.id == id).ok_or((StatusCode::NOT_FOUND, "Category not found".into()))?;
+    category.name = name; let result = category.clone();
+    s.save_categories(&next).await?; *list = next; drop(list);
+    s.changed(); Ok(Json(result))
+}
+async fn remove_category(State(s): State<Arc<Library>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    {
+        let mut list = s.categories.write().await;
+        let next: Vec<Category> = list.iter().filter(|c| c.id != id).cloned().collect();
+        if next.len() == list.len() { return Err((StatusCode::NOT_FOUND, "Category not found".into())); }
+        s.save_categories(&next).await?; *list = next;
+    }
+    let members: Vec<String> = s.files.read().await.values().filter(|f| f.category.as_deref() == Some(id.as_str())).map(|f| f.id.clone()).collect();
+    for member in members {
+        let lock = s.lock(&member).await; let _guard = lock.lock().await;
+        if let Ok(mut record) = s.record(&member).await { if record.category.as_deref() == Some(id.as_str()) { record.category = None; s.persist(record).await?; } }
+    }
+    s.changed(); Ok(StatusCode::NO_CONTENT)
 }
 async fn create(State(s): State<Arc<Library>>, Json(args): Json<CreateFile>) -> ApiResult<Json<Upload>> {
     let file = s.create(args).await?; Ok(Json(Upload { id: file.id, offset: 0, ready: false }))
@@ -154,12 +207,20 @@ async fn chunk(State(s): State<Arc<Library>>, Path(id): Path<String>, Query(acce
 async fn complete(State(s): State<Arc<Library>>, Path(id): Path<String>) -> ApiResult<Json<FileRecord>> {
     let lock = s.lock(&id).await; let _guard = lock.lock().await; Ok(Json(s.finish(&id).await?))
 }
-async fn rename(State(s): State<Arc<Library>>, Path(id): Path<String>, Json(args): Json<Rename>) -> ApiResult<Json<FileRecord>> {
-    let name = clean_name(&args.name)?;
+async fn update(State(s): State<Arc<Library>>, Path(id): Path<String>, Json(args): Json<Change>) -> ApiResult<Json<FileRecord>> {
+    let name = match args.name.as_deref() { Some(n) => Some(clean_name(n)?), None => None };
+    let category = match args.category.as_deref() {
+        None => None,
+        Some("") => Some(None),
+        Some(c) => { if !s.has_category(c).await { return Err(bad("That category no longer exists")); } Some(Some(c.to_owned())) }
+    };
     s.record(&id).await?;
     let lock = s.lock(&id).await; let _guard = lock.lock().await;
     let mut record = s.record(&id).await?;
-    if record.name != name { record.name = name; s.persist(record.clone()).await?; }
+    let mut dirty = false;
+    if let Some(n) = name { if record.name != n { record.name = n; dirty = true; } }
+    if let Some(c) = category { if record.category != c { record.category = c; dirty = true; } }
+    if dirty { s.persist(record.clone()).await?; }
     Ok(Json(record))
 }
 async fn thumbnail(State(s): State<Arc<Library>>, Path(id): Path<String>, body: axum::body::Bytes) -> ApiResult<StatusCode> {
@@ -221,11 +282,11 @@ async fn events(State(s): State<Arc<Library>>) -> Sse<impl Stream<Item = Result<
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(10)).text("keepalive"))
 }
 
-pub async fn import(s: &Arc<Library>, path: PathBuf, app: &tauri::AppHandle) -> Result<(), String> {
+pub async fn import(s: &Arc<Library>, path: PathBuf, category: Option<String>, app: &tauri::AppHandle) -> Result<(), String> {
     let mut source = fs::File::open(&path).await.map_err(|e| e.to_string())?;
     let size = source.metadata().await.map_err(|e| e.to_string())?.len();
     let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let item = s.create(CreateFile { name, size, source: "PC".into() }).await.map_err(|e| e.1)?;
+    let item = s.create(CreateFile { name, size, source: "PC".into(), category }).await.map_err(|e| e.1)?;
     let result: Result<(), String> = async {
         let mut dest = fs::OpenOptions::new().write(true).open(s.partial(&item.id)).await.map_err(|e| e.to_string())?;
         let mut buffer = vec![0; 4 * 1024 * 1024]; let mut sent = 0u64; let mut last = std::time::Instant::now();

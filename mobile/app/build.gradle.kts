@@ -5,7 +5,7 @@ val signing = Properties().apply { val f = rootProject.file("signing.properties"
 android {
     namespace = "com.caprarim.colddrop"
     compileSdk = 36
-    defaultConfig { applicationId = "com.caprarim.colddrop"; minSdk = 29; targetSdk = 35; versionCode = 2; versionName = "1.1.0" }
+    defaultConfig { applicationId = "com.caprarim.colddrop"; minSdk = 29; targetSdk = 35; versionCode = 3; versionName = "1.2.0" }
     signingConfigs { create("release") { storeFile = rootProject.file(signing.getProperty("storeFile", "release.jks")); storePassword = signing.getProperty("storePassword"); keyAlias = "colddrop"; keyPassword = signing.getProperty("keyPassword") } }
     buildTypes { release { isMinifyEnabled = false; signingConfig = signingConfigs.getByName("release") } }
     lint { checkReleaseBuilds = false }

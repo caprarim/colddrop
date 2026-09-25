@@ -1,11 +1,12 @@
 import { invoke, isTauri } from '@tauri-apps/api/core';
 
 export type Connection = { base: string; key: string; addresses?: string[]; folder?: string };
-export type GalleryFile = { id: string; name: string; size: number; mime: string; created: number; source: string; ready: boolean; thumbnail: boolean };
+export type GalleryFile = { id: string; name: string; size: number; mime: string; created: number; source: string; ready: boolean; thumbnail: boolean; category?: string | null };
+export type Category = { id: string; name: string; created: number };
 export type Transfer = { id: string; name: string; size: number; sent: number; status: 'queued' | 'uploading' | 'downloading' | 'complete' | 'failed'; error?: string };
 declare global {
   interface Window {
-    ColdDrop?: { connection(): string; saveConnection(value: string): void; pickFiles(): void; scan(): void; download(id: string, name: string, mime: string): void; transfers(): string; retry(id: string): void; disconnect(): void };
+    ColdDrop?: { connection(): string; saveConnection(value: string): void; pickFiles(): void; pickFilesInto?(category: string): void; scan(): void; download(id: string, name: string, mime: string): void; transfers(): string; retry(id: string): void; disconnect(): void };
     onColdDropTransfer?: (value: Transfer) => void;
     onColdDropScan?: (value: string) => void;
     onColdDropError?: (value: string) => void;
@@ -40,7 +41,7 @@ export const pairingLink = (c: Connection, address: string) => `colddrop://pair?
 export function kind(file: GalleryFile): string { return file.mime.startsWith('video/') ? 'Videos' : file.mime.startsWith('image/') ? 'Images' : 'Documents'; }
 export function bytes(n: number): string { if (!n) return '0 B'; const i = Math.min(4, Math.floor(Math.log(n) / Math.log(1024))); return `${(n / 1024 ** i).toFixed(i > 0 ? 1 : 0)} ${['B', 'KB', 'MB', 'GB', 'TB'][i]}`; }
 
-export async function browserUpload(c: Connection, file: File, report: (t: Transfer) => void) {
+export async function browserUpload(c: Connection, file: File, report: (t: Transfer) => void, category: string | null = null) {
   const fingerprint = `upload:${c.base}:${file.name}:${file.size}:${file.lastModified}`;
   let id = localStorage.getItem(fingerprint) || '', offset = 0;
   if (id) {
@@ -48,7 +49,7 @@ export async function browserUpload(c: Connection, file: File, report: (t: Trans
     catch (error) { if (String(error).includes('File not found')) { id = ''; } else throw error; }
   }
   if (!id) {
-    const created = await request<{ id: string }>(c, '/api/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, size: file.size, source: desktop ? 'PC' : 'Phone' }) });
+    const created = await request<{ id: string }>(c, '/api/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, size: file.size, source: desktop ? 'PC' : 'Phone', category: category ?? '' }) });
     id = created.id; localStorage.setItem(fingerprint, id);
   }
   const progress = (status: Transfer['status'], error?: string) => report({ id, name: file.name, size: file.size, sent: offset, status, error });

@@ -29,5 +29,5 @@ if (-not (Test-Path -LiteralPath $signingFile)) {
 Set-Location (Join-Path $projectDir 'mobile')
 & .\gradlew.bat assembleRelease -x test -x lint --no-daemon
 if ($LASTEXITCODE -ne 0) { throw 'Android APK packaging failed' }
-Copy-Item -LiteralPath (Join-Path $projectDir 'mobile\app\build\outputs\apk\release\app-release.apk') -Destination (Join-Path $projectDir 'artifacts\ColdDrop-1.1.0.apk')
-Write-Output 'Created artifacts\ColdDrop-1.1.0.apk'
+Copy-Item -LiteralPath (Join-Path $projectDir 'mobile\app\build\outputs\apk\release\app-release.apk') -Destination (Join-Path $projectDir 'artifacts\ColdDrop-1.2.0.apk')
+Write-Output 'Created artifacts\ColdDrop-1.2.0.apk'

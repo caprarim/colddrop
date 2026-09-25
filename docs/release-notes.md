@@ -1,3 +1,8 @@
+ColdDrop 1.2.0
+
+- Categories: create, rename, and delete your own folders from any tab, add files straight into one, or move any file in from its preview.
+- Rename button on every file tile.
+
 ColdDrop 1.1.0
 
 - Rename any file from its preview. The new name appears on both devices and is used when saving a copy.

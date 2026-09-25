@@ -16,14 +16,15 @@ fn connection(state: tauri::State<'_, Arc<server::Library>>) -> Connection {
 }
 
 #[tauri::command]
-async fn choose_files(app: tauri::AppHandle, state: tauri::State<'_, Arc<server::Library>>) -> Result<(), String> {
+async fn choose_files(category: Option<String>, app: tauri::AppHandle, state: tauri::State<'_, Arc<server::Library>>) -> Result<(), String> {
     if let Some(files) = rfd::AsyncFileDialog::new().set_title("Add files to ColdDrop").pick_files().await {
         let library = state.inner().clone();
+        let category = category.filter(|c| !c.is_empty());
         tauri::async_runtime::spawn(async move {
             for file in files {
                 let path = file.path().to_path_buf();
                 let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                if let Err(error) = server::import(&library, path, &app).await {
+                if let Err(error) = server::import(&library, path, category.clone(), &app).await {
                     let _ = app.emit("transfer", serde_json::json!({"id":name,"name":name,"error":error,"status":"failed"}));
                 }
             }
