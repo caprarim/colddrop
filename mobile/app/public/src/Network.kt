@@ -21,10 +21,13 @@ object Network {
         val connection = open(job, path, method)
         try {
             if (body != null) { connection.doOutput = true; connection.setFixedLengthStreamingMode(length); connection.setRequestProperty("Content-Type", mime); connection.outputStream.use { it.write(body, 0, length) } }
-            val code = connection.responseCode
-            if (code !in 200..299) throw java.io.IOException(connection.errorStream?.bufferedReader()?.use { it.readText().take(240) } ?: "PC returned $code")
-            if (code == 204) return JSONObject()
-            val text = connection.inputStream.bufferedReader().use { it.readText() }; return if (text.isBlank()) JSONObject() else JSONObject(text)
-        } finally { connection.disconnect() }
+            return result(connection)
+        } catch (e: Exception) { connection.disconnect(); throw e }
+    }
+    fun result(connection: HttpURLConnection): JSONObject {
+        val code = connection.responseCode
+        if (code !in 200..299) throw java.io.IOException(connection.errorStream?.bufferedReader()?.use { it.readText().take(240) } ?: "PC returned $code")
+        val text = connection.inputStream.bufferedReader().use { it.readText() }
+        return if (code == 204 || text.isBlank()) JSONObject() else JSONObject(text)
     }
 }

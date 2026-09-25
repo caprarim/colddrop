@@ -1,4 +1,5 @@
-import { cp, mkdir } from 'node:fs/promises';
+import { cp, mkdir, rm } from 'node:fs/promises';
+await rm('mobile/app/assets', { recursive: true, force: true });
 await mkdir('mobile/app/assets', { recursive: true });
 await cp('dist', 'mobile/app/assets', { recursive: true });
 await mkdir('mobile/app/res', { recursive: true });

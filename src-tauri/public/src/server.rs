@@ -1,4 +1,4 @@
-use axum::{body::Body, extract::{DefaultBodyLimit, Path, Query, State, Request}, http::{header, HeaderMap, StatusCode}, middleware::{self, Next}, response::{IntoResponse, Response, Sse, sse::{Event, KeepAlive}}, routing::{get, post, put}, Json, Router};
+use axum::{body::Body, extract::{DefaultBodyLimit, Path, Query, State, Request}, http::{header, HeaderMap, StatusCode}, middleware::{self, Next}, response::{IntoResponse, Response, Sse, sse::{Event, KeepAlive}}, routing::{get, patch, post, put}, Json, Router};
 use futures_util::Stream;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, convert::Infallible, path::PathBuf, sync::Arc, time::{Duration, SystemTime, UNIX_EPOCH}};
@@ -13,6 +13,12 @@ type ApiResult<T> = Result<T, ApiError>;
 fn ioerr(e: impl std::fmt::Display) -> ApiError { (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()) }
 fn bad(e: &str) -> ApiError { (StatusCode::BAD_REQUEST, e.into()) }
 fn now() -> u64 { SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() * 1000 }
+fn clean_name(raw: &str) -> ApiResult<String> {
+    let name: String = raw.chars().filter(|c| !c.is_control() && !matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')).take(240).collect();
+    let name = name.trim().trim_end_matches(|c: char| c == '.' || c == ' ').to_owned();
+    if name.is_empty() { return Err(bad("A file name is required")); }
+    Ok(name)
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct FileRecord {
@@ -23,6 +29,8 @@ pub struct FileRecord {
 struct Listing { files: Vec<FileRecord> }
 #[derive(Deserialize)]
 struct CreateFile { name: String, size: u64, #[serde(default)] source: String }
+#[derive(Deserialize)]
+struct Rename { name: String }
 #[derive(Deserialize)]
 struct Access { #[serde(default)] offset: u64, #[serde(default)] download: bool }
 #[derive(Serialize)]
@@ -79,8 +87,7 @@ impl Library {
         if !file.ready { return Err((StatusCode::CONFLICT, "This file is still transferring".into())); } Ok(file)
     }
     async fn create(&self, args: CreateFile) -> ApiResult<FileRecord> {
-        let name: String = args.name.chars().filter(|c| !c.is_control() && *c != '/' && *c != '\\').take(240).collect();
-        if name.trim().is_empty() { return Err(bad("A file name is required")); }
+        let name = clean_name(&args.name)?;
         if args.size > 16 * 1024 * 1024 * 1024 * 1024u64 { return Err(bad("Maximum file size is 16 TiB")); }
         let mime = mime_guess::from_path(&name).first_or_octet_stream().to_string();
         let record = FileRecord { id: uuid::Uuid::new_v4().to_string(), name, size: args.size, mime, created: now(), source: if args.source == "PC" { "PC" } else { "Phone" }.into(), ready: false, thumbnail: false };
@@ -112,12 +119,13 @@ pub async fn serve(state: Arc<Library>, listener: tokio::net::TcpListener) -> st
         .route("/api/uploads", post(create))
         .route("/api/uploads/{id}", get(status).put(chunk))
         .route("/api/uploads/{id}/complete", post(complete))
+        .route("/api/files/{id}", patch(rename))
         .route("/api/files/{id}/thumbnail", put(thumbnail).get(get_thumbnail))
         .route("/api/files/{id}/content", get(content))
         .route("/api/events", get(events))
-        .layer(DefaultBodyLimit::max(8 * 1024 * 1024))
+        .layer(DefaultBodyLimit::max(32 * 1024 * 1024))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
-        .layer(CorsLayer::new().allow_origin(origins).allow_private_network(true).allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::OPTIONS]).allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE]).expose_headers([header::CONTENT_LENGTH, header::CONTENT_RANGE, header::ACCEPT_RANGES]).max_age(Duration::from_secs(3600)))
+        .layer(CorsLayer::new().allow_origin(origins).allow_private_network(true).allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::PUT, axum::http::Method::PATCH, axum::http::Method::OPTIONS]).allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::RANGE]).expose_headers([header::CONTENT_LENGTH, header::CONTENT_RANGE, header::ACCEPT_RANGES]).max_age(Duration::from_secs(3600)))
         .with_state(state);
     axum::serve(listener, app).await
 }
@@ -145,6 +153,14 @@ async fn chunk(State(s): State<Arc<Library>>, Path(id): Path<String>, Query(acce
 }
 async fn complete(State(s): State<Arc<Library>>, Path(id): Path<String>) -> ApiResult<Json<FileRecord>> {
     let lock = s.lock(&id).await; let _guard = lock.lock().await; Ok(Json(s.finish(&id).await?))
+}
+async fn rename(State(s): State<Arc<Library>>, Path(id): Path<String>, Json(args): Json<Rename>) -> ApiResult<Json<FileRecord>> {
+    let name = clean_name(&args.name)?;
+    s.record(&id).await?;
+    let lock = s.lock(&id).await; let _guard = lock.lock().await;
+    let mut record = s.record(&id).await?;
+    if record.name != name { record.name = name; s.persist(record.clone()).await?; }
+    Ok(Json(record))
 }
 async fn thumbnail(State(s): State<Arc<Library>>, Path(id): Path<String>, body: axum::body::Bytes) -> ApiResult<StatusCode> {
     s.record(&id).await?;

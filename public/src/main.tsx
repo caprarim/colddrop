@@ -1,15 +1,22 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import QRCode from 'qrcode';
-import { ArrowDownToLine, ArrowUpFromLine, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronRight, CircleAlert, Copy, FileText, Film, FolderOpen, Grid2X2, Image as ImageIcon, Laptop, List, LoaderCircle, Plus, Search, Settings2, Smartphone, Upload, Wifi, WifiOff, X, ScanLine, Link, Play, RefreshCw, Music } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpFromLine, ArrowLeft, ArrowRight, Check, CheckCheck, ChevronRight, CircleAlert, Copy, FileText, Film, FolderOpen, Grid2X2, Image as ImageIcon, Laptop, List, LoaderCircle, Plus, Search, Settings2, Smartphone, Upload, Wifi, WifiOff, X, ScanLine, Link, Play, RefreshCw, Music, Pencil } from 'lucide-react';
 import { boot, browserUpload, bytes, desktop, GalleryFile, Connection, kind, mediaUrl, pairingLink, parsePairing, request, Transfer, url } from './api';
 import icon from './icon.png';
 import './styles.css';
 
 const filters = ['All files', 'Videos', 'Images', 'Documents'];
 const icons = [Grid2X2, Film, ImageIcon, FileText];
+const same = (a: GalleryFile, b: GalleryFile) => a.name === b.name && a.size === b.size && a.mime === b.mime && a.created === b.created && a.source === b.source && a.ready === b.ready && a.thumbnail === b.thumbnail;
+function merge(prev: GalleryFile[], next: GalleryFile[]) {
+  const old = new Map(prev.map(f => [f.id, f]));
+  let unchanged = prev.length === next.length;
+  const result = next.map((f, i) => { const o = old.get(f.id); const keep = o && same(o, f) ? o : f; if (keep !== prev[i]) unchanged = false; return keep; });
+  return unchanged ? prev : result;
+}
 function App() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [files, setFiles] = useState<GalleryFile[]>([]);
@@ -19,7 +26,7 @@ function App() {
   const [filter, setFilter] = useState('All files');
   const [query, setQuery] = useState('');
   const [list, setList] = useState(false);
-  const [preview, setPreview] = useState<GalleryFile | null>(null);
+  const [previewId, setPreviewId] = useState<string | null>(null);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -27,12 +34,25 @@ function App() {
   const [busy, setBusy] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const browsingQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const live = useRef<Connection | null>(null);
+  const loading = useRef(false);
+  const again = useRef(false);
+  const saving = useRef(false);
   const report = useCallback((t: Transfer) => { setTransfers(items => [t, ...items.filter(x => x.id !== t.id)].slice(0, 100)); }, []);
   const refresh = useCallback(async () => {
-    if (!connection) return;
-    try { const result = await request<{ files: GalleryFile[] }>(connection, '/api/files'); setFiles(result.files); setOnline(true); setError(''); setLoaded(true); }
-    catch { setOnline(false); setLoaded(true); }
-  }, [connection]);
+    if (!live.current) return;
+    if (loading.current) { again.current = true; return; }
+    loading.current = true;
+    try {
+      do {
+        again.current = false;
+        const c: Connection | null = live.current; if (!c) break;
+        try { const result = await request<{ files: GalleryFile[] }>(c, '/api/files'); if (live.current !== c) continue; setFiles(prev => merge(prev, result.files)); setOnline(true); setError(''); }
+        catch { if (live.current === c) setOnline(false); }
+        setLoaded(true);
+      } while (again.current);
+    } finally { loading.current = false; }
+  }, []);
   useEffect(() => {
     boot().then(c => { setConnection(c); if (!c) { setLoaded(true); setView('devices'); } }).catch(e => { setError(String(e)); setLoaded(true); });
     window.onColdDropTransfer = report;
@@ -43,12 +63,13 @@ function App() {
     return () => { cleanup?.(); delete window.onColdDropTransfer; delete window.onColdDropError; };
   }, [report]);
   useEffect(() => {
+    live.current = connection;
     if (!connection) return;
-    setLoaded(false); refresh();
+    setLoaded(false); again.current = true; refresh();
     const stream = new EventSource(url(connection, '/api/events'));
     stream.onmessage = () => { setOnline(true); refresh(); };
     stream.onerror = () => setOnline(false);
-    const timer = setInterval(refresh, 15000);
+    const timer = setInterval(() => { if (stream.readyState !== EventSource.OPEN) refresh(); }, 15000);
     const resume = () => { if (!document.hidden) refresh(); };
     window.onColdDropResume = resume;
     document.addEventListener('visibilitychange', resume);
@@ -67,34 +88,49 @@ function App() {
       browsingQueue.current = browsingQueue.current.then(() => browserUpload(c, file, report)).catch(e => setError(`${file.name}: ${String(e)}`));
     }
   };
-  const download = async (file: GalleryFile) => {
-    if (!connection || busy) return;
-    setBusy(true);
+  const download = useCallback(async (file: GalleryFile) => {
+    const c = live.current;
+    if (!c || saving.current) return;
+    saving.current = true; setBusy(true);
     try {
       if (desktop) { const path = await invoke<string | null>('save_file', { id: file.id }); if (path) setNotice(`Saved ${file.name}`); }
       else if (window.ColdDrop) { window.ColdDrop.download(file.id, file.name, file.mime); }
-      else { const a = document.createElement('a'); a.href = `${mediaUrl(connection, file)}&download=true`; a.download = file.name; a.click(); }
-    } catch (e) { setError(String(e)); } finally { setBusy(false); }
-  };
-  const visible = files.filter(f => (filter === 'All files' || kind(f) === filter) && f.name.toLowerCase().includes(query.toLowerCase()));
+      else { const a = document.createElement('a'); a.href = `${mediaUrl(c, file)}&download=true`; a.download = file.name; a.click(); }
+    } catch (e) { setError(String(e)); } finally { saving.current = false; setBusy(false); }
+  }, []);
+  const rename = useCallback(async (file: GalleryFile, name: string) => {
+    const c = live.current;
+    if (!c) throw new Error('Connect to your PC to rename files');
+    const updated = await request<GalleryFile>(c, `/api/files/${file.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }) });
+    setFiles(items => items.map(f => f.id === updated.id ? updated : f));
+    setNotice(`Renamed to ${updated.name}`);
+  }, []);
+  const visible = useMemo(() => { const q = query.trim().toLowerCase(); return files.filter(f => (filter === 'All files' || kind(f) === filter) && (!q || f.name.toLowerCase().includes(q))); }, [files, filter, query]);
+  const counts = useMemo(() => { const c: Record<string, number> = { 'All files': files.length, Videos: 0, Images: 0, Documents: 0 }; for (const f of files) c[kind(f)]++; return c; }, [files]);
+  const stored = useMemo(() => files.reduce((sum, f) => f.ready ? sum + f.size : sum, 0), [files]);
+  const viewable = useMemo(() => visible.filter(f => f.ready), [visible]);
+  const groups = useMemo(() => {
+    const result = new Map<string, GalleryFile[]>(); const today = new Date(); const todayText = today.toDateString();
+    for (const file of visible) {
+      const date = new Date(file.created);
+      const title = date.toDateString() === todayText ? 'Today' : date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+      const items = result.get(title); if (items) items.push(file); else result.set(title, [file]);
+    }
+    return result;
+  }, [visible]);
   const active = transfers.filter(t => ['uploading', 'queued', 'downloading'].includes(t.status));
-  const groups = new Map<string, GalleryFile[]>();
-  for (const file of visible) {
-    const date = new Date(file.created); const today = new Date();
-    const title = date.toDateString() === today.toDateString() ? 'Today' : date.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: date.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
-    groups.set(title, [...(groups.get(title) || []), file]);
-  }
+  const preview = previewId ? files.find(f => f.id === previewId) : undefined;
   return <div className="app" onDragOver={e => { e.preventDefault(); if (e.dataTransfer.types.includes('Files')) setDrag(true); }} onDrop={e => { e.preventDefault(); setDrag(false); if (online && e.dataTransfer.files.length) uploadFiles(e.dataTransfer.files); }}>
     <input ref={picker} type="file" multiple hidden onChange={e => { if (e.target.files) uploadFiles(e.target.files); e.target.value = ''; }} />
     <aside className="sidebar">
       <a className="brand" href="#" onClick={e => { e.preventDefault(); setView('library'); }}><img src={icon} alt=""/><span>ColdDrop<span className="brand-sub">Your shared space</span></span></a>
       <button className="primary sidebar-add" onClick={add}><Plus size={19}/> Add files</button>
       <div className="nav-label">Library</div>
-      <nav aria-label="Library">{filters.map((f, i) => { const Icon = icons[i]; return <button key={f} className={`nav-item ${view === 'library' && filter === f ? 'selected' : ''}`} onClick={() => { setFilter(f); setView('library'); }}><Icon size={19}/><span>{f}</span><span className="count">{files.filter(x => f === 'All files' || kind(x) === f).length}</span></button>; })}</nav>
+      <nav aria-label="Library">{filters.map((f, i) => { const Icon = icons[i]; return <button key={f} className={`nav-item ${view === 'library' && filter === f ? 'selected' : ''}`} onClick={() => { setFilter(f); setView('library'); }}><Icon size={19}/><span>{f}</span><span className="count">{counts[f]}</span></button>; })}</nav>
       <div className="nav-separator"/>
       <button className={`nav-item ${view === 'transfers' ? 'selected' : ''}`} onClick={() => setView('transfers')}><ArrowUpFromLine size={19}/><span>Transfers</span>{active.length > 0 && <span className="count">{active.length}</span>}</button>
       <button className={`nav-item ${view === 'devices' ? 'selected' : ''}`} onClick={() => setView('devices')}><Laptop size={19}/><span>Devices</span></button>
-      <div className="sidebar-foot"><div className={`connection-status ${online ? 'connected' : ''}`}>{online ? <Wifi size={16}/> : <WifiOff size={16}/>}<span>{online ? 'Connected locally' : connection ? 'PC is offline' : 'Ready to connect'}</span></div><p>{bytes(files.filter(f => f.ready).reduce((sum, f) => sum + f.size, 0))} in your library</p><small>Original quality. Your storage.</small></div>
+      <div className="sidebar-foot"><div className={`connection-status ${online ? 'connected' : ''}`}>{online ? <Wifi size={16}/> : <WifiOff size={16}/>}<span>{online ? 'Connected locally' : connection ? 'PC is offline' : 'Ready to connect'}</span></div><p>{bytes(stored)} in your library</p><small>Original quality. Your storage.</small></div>
     </aside>
     <main>
       <header className="topbar"><span className="mobile-brand"><img src={icon} alt=""/>ColdDrop</span><span className="breadcrumb">Your space <ChevronRight size={14}/> {view === 'library' ? filter : view === 'devices' ? 'Devices' : 'Transfers'}</span><button className="device-indicator" onClick={() => setView('devices')}><span className={`status-dot ${online ? 'online' : ''}`}/>{desktop ? 'This PC' : online ? 'PC connected' : 'Connect PC'}<Settings2 size={15}/></button></header>
@@ -106,7 +142,7 @@ function App() {
           <div className="toolbar"><label className="search"><Search size={18}/><input type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Search your files" aria-label="Search files"/></label><span className="file-total">{visible.length} {visible.length === 1 ? 'file' : 'files'}</span><div className="view-toggle"><button aria-label="Grid view" aria-pressed={!list} className={!list ? 'active' : ''} onClick={() => setList(false)}><Grid2X2 size={18}/></button><button aria-label="List view" aria-pressed={list} className={list ? 'active' : ''} onClick={() => setList(true)}><List size={19}/></button></div></div>
           <div className="mobile-filters">{filters.map(f => <button key={f} className={filter === f ? 'active' : ''} onClick={() => setFilter(f)}>{f}</button>)}</div>
           {active.length > 0 && <button className="transfer-banner" onClick={() => setView('transfers')}><Upload size={20}/><span><strong>{active.length} {active.length === 1 ? 'transfer' : 'transfers'} in progress</strong><small>{active[0].name}</small></span><ChevronRight size={18}/></button>}
-          {!loaded ? <div className="gallery skeletons" aria-label="Loading gallery">{Array.from({ length: 8 }, (_, i) => <div className="skeleton" key={i}/>)}</div> : visible.length === 0 ? <div className="empty"><div className="empty-art"><FolderOpen size={46} strokeWidth={1.2}/><span><Plus size={16}/></span></div><h2>{query ? 'No matching files' : filter === 'All files' ? 'Big files. Small effort.' : `No ${filter.toLowerCase()} yet`}</h2><p>{query ? 'Try a different file name.' : 'Add videos, photos, presentations, or anything else. They’ll appear here on both devices.'}</p>{!query && <button className="primary" onClick={add}><Plus size={18}/>{online ? 'Add your first files' : 'Connect your devices'}</button>}<div className="empty-formats">MP4 <span>·</span> MOV <span>·</span> JPG <span>·</span> PPTX <span>·</span> and more</div></div> : Array.from(groups).map(([date, items]) => <section className="date-group" key={date}><div className="group-heading"><h2>{date}</h2><span>{items.length} {items.length === 1 ? 'file' : 'files'}</span></div><div className={list ? 'file-list' : 'gallery'}>{items.map(f => <FileTile key={f.id} file={f} connection={connection!} list={list} onOpen={() => setPreview(f)} onDownload={() => download(f)}/>)}</div></section>)}
+          {!loaded ? <div className="gallery skeletons" aria-label="Loading gallery">{Array.from({ length: 8 }, (_, i) => <div className="skeleton" key={i}/>)}</div> : visible.length === 0 ? <div className="empty"><div className="empty-art"><FolderOpen size={46} strokeWidth={1.2}/><span><Plus size={16}/></span></div><h2>{query ? 'No matching files' : filter === 'All files' ? 'Big files. Small effort.' : `No ${filter.toLowerCase()} yet`}</h2><p>{query ? 'Try a different file name.' : 'Add videos, photos, presentations, or anything else. They’ll appear here on both devices.'}</p>{!query && <button className="primary" onClick={add}><Plus size={18}/>{online ? 'Add your first files' : 'Connect your devices'}</button>}<div className="empty-formats">MP4 <span>·</span> MOV <span>·</span> JPG <span>·</span> PPTX <span>·</span> and more</div></div> : Array.from(groups).map(([date, items]) => <section className="date-group" key={date}><div className="group-heading"><h2>{date}</h2><span>{items.length} {items.length === 1 ? 'file' : 'files'}</span></div><div className={list ? 'file-list' : 'gallery'}>{items.map(f => <FileTile key={f.id} file={f} connection={connection!} list={list} onOpen={setPreviewId} onDownload={download}/>)}</div></section>)}
           {files.length > 0 && <div className="library-footer"><CheckCheck size={15}/> {online ? 'Live updates are on' : 'Waiting for your PC'}<span>Files stay in their original quality</span></div>}
         </>}
         {view === 'devices' && <Devices connection={connection} online={online} onConnect={c => { setConnection(c); setFiles([]); setView('library'); }} onDisconnect={() => { window.ColdDrop?.disconnect(); localStorage.removeItem('colddrop-connection'); setConnection(null); setFiles([]); setOnline(false); }} notify={setNotice} error={setError}/>}
@@ -114,13 +150,13 @@ function App() {
       </div>
     </main>
     <nav className="bottom-nav" aria-label="Main navigation"><button className={view === 'library' ? 'selected' : ''} onClick={() => setView('library')}><Grid2X2 size={21}/>Library</button><button className={view === 'transfers' ? 'selected' : ''} onClick={() => setView('transfers')}><ArrowUpFromLine size={21}/>Transfers{active.length > 0 && <span className="nav-badge">{active.length}</span>}</button><button className={view === 'devices' ? 'selected' : ''} onClick={() => setView('devices')}><Laptop size={21}/>Devices</button></nav>
-    {preview && connection && <Preview file={preview} files={visible.filter(f => f.ready)} connection={connection} busy={busy} onClose={() => setPreview(null)} onSelect={setPreview} onDownload={() => download(preview)}/>}
+    {preview && connection && <Preview file={preview} files={viewable} connection={connection} busy={busy} onClose={() => setPreviewId(null)} onSelect={f => setPreviewId(f.id)} onDownload={() => download(preview)} onRename={name => rename(preview, name)}/>}
     {notice && <div className="toast" role="status"><Check size={18}/>{notice}</div>}
     {drag && <div className="drop-overlay" onDragLeave={() => setDrag(false)} onDragOver={e => e.preventDefault()}><Upload size={52}/><h2>Drop into your library</h2><p>Original files. Ready on both devices.</p></div>}
   </div>;
 }
 
-function FileTile({ file, connection, list, onOpen, onDownload }: { file: GalleryFile; connection: Connection; list: boolean; onOpen(): void; onDownload(): void }) {
+const FileTile = memo(function FileTile({ file, connection, list, onOpen, onDownload }: { file: GalleryFile; connection: Connection; list: boolean; onOpen(id: string): void; onDownload(file: GalleryFile): void }) {
   const ref = useRef<HTMLElement>(null); const [seen, setSeen] = useState(false); const [failed, setFailed] = useState(false); const generating = useRef(false);
   const type = kind(file); const Icon = type === 'Videos' ? Film : type === 'Images' ? ImageIcon : file.mime.startsWith('audio/') ? Music : FileText;
   useEffect(() => { const observer = new IntersectionObserver(entries => { if (entries.some(e => e.isIntersecting)) { setSeen(true); observer.disconnect(); } }, { rootMargin: '160px' }); if (ref.current) observer.observe(ref.current); return () => observer.disconnect(); }, []);
@@ -137,7 +173,7 @@ function FileTile({ file, connection, list, onOpen, onDownload }: { file: Galler
     } catch { /* The original file remains available if its preview cannot be generated. */ }
   }
   return <article ref={ref} className={`file-tile ${list ? 'is-list' : ''}`}>
-    <button className={`file-open ${!file.ready ? 'pending' : ''}`} onClick={onOpen} aria-label={`Preview ${file.name}`}>
+    <button className={`file-open ${!file.ready ? 'pending' : ''}`} onClick={() => onOpen(file.id)} aria-label={`Preview ${file.name}`}>
       <div className={`thumbnail type-${type.toLowerCase()}`}>
         {file.ready && seen && !failed && (file.thumbnail ? <img loading="lazy" src={url(connection, `/api/files/${file.id}/thumbnail`)} alt="" onError={() => setFailed(true)}/> : type === 'Images' ? <img loading="lazy" crossOrigin="anonymous" src={mediaUrl(connection, file)} alt="" onLoad={e => thumbnail(e.currentTarget)} onError={() => setFailed(true)}/> : type === 'Videos' ? <video muted playsInline preload="metadata" crossOrigin="anonymous" src={`${mediaUrl(connection, file)}#t=0.1`} onLoadedData={e => thumbnail(e.currentTarget)} onError={() => setFailed(true)}/> : null)}
         {(!file.ready || failed || (!file.thumbnail && type === 'Documents')) && <div className="file-placeholder"><Icon size={list ? 25 : 40} strokeWidth={1.35}/>{!list && <span>{file.name.split('.').pop()?.slice(0, 8).toUpperCase()}</span>}</div>}
@@ -146,18 +182,27 @@ function FileTile({ file, connection, list, onOpen, onDownload }: { file: Galler
       </div>
       <div className="file-info"><h3 title={file.name}>{file.name}</h3><div><span>{bytes(file.size)}</span><span className="file-dot">·</span><span>{file.source === 'PC' ? <Laptop size={12}/> : <Smartphone size={12}/>} {file.source}</span></div></div>
     </button>
-    <button className="file-download icon-button" onClick={onDownload} disabled={!file.ready} aria-label={`Download ${file.name}`}><ArrowDownToLine size={17}/></button>
+    <button className="file-download icon-button" onClick={() => onDownload(file)} disabled={!file.ready} aria-label={`Download ${file.name}`}><ArrowDownToLine size={17}/></button>
   </article>;
-}
+});
 
-function Preview({ file, files, connection, busy, onClose, onSelect, onDownload }: { file: GalleryFile; files: GalleryFile[]; connection: Connection; busy: boolean; onClose(): void; onSelect(file: GalleryFile): void; onDownload(): void }) {
+function Preview({ file, files, connection, busy, onClose, onSelect, onDownload, onRename }: { file: GalleryFile; files: GalleryFile[]; connection: Connection; busy: boolean; onClose(): void; onSelect(file: GalleryFile): void; onDownload(): void; onRename(name: string): Promise<void> }) {
   const dialog = useRef<HTMLDialogElement>(null); const [failed, setFailed] = useState(false); const [zoom, setZoom] = useState(false); const touch = useRef<number | null>(null);
+  const [editing, setEditing] = useState(false); const [draft, setDraft] = useState(''); const [renaming, setRenaming] = useState(false); const [problem, setProblem] = useState('');
   const index = files.findIndex(f => f.id === file.id); const type = kind(file);
   const step = (direction: number) => { const next = files[index + direction]; if (next) onSelect(next); };
+  const startRename = () => { setDraft(file.name); setProblem(''); setEditing(true); };
+  const saveRename = async () => {
+    const name = draft.trim();
+    if (!name) { setProblem('Type a name first'); return; }
+    if (name === file.name) { setEditing(false); return; }
+    setRenaming(true); setProblem('');
+    try { await onRename(name); setEditing(false); } catch (e) { setProblem(String(e).replace(/^Error: /, '')); } finally { setRenaming(false); }
+  };
   useEffect(() => { const el = dialog.current; el?.showModal(); return () => el?.close(); }, []);
-  useEffect(() => { setFailed(false); setZoom(false); }, [file.id]);
-  return <dialog className="preview" ref={dialog} onCancel={e => { e.preventDefault(); onClose(); }} onKeyDown={e => { if (e.target instanceof HTMLVideoElement || e.target instanceof HTMLAudioElement) return; if (e.key === 'ArrowLeft') step(-1); if (e.key === 'ArrowRight') step(1); }}>
-    <header className="preview-header"><button className="icon-button" onClick={onClose} aria-label="Close preview"><X size={22}/></button><div><h2>{file.name}</h2><p>{bytes(file.size)} · From {file.source} · {new Date(file.created).toLocaleDateString()}</p></div><button className="primary" disabled={!file.ready || busy} onClick={onDownload}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowDownToLine size={18}/>}<span>{busy ? 'Saving…' : 'Download'}</span></button></header>
+  useEffect(() => { setFailed(false); setZoom(false); setEditing(false); }, [file.id]);
+  return <dialog className="preview" ref={dialog} onCancel={e => { e.preventDefault(); if (editing) setEditing(false); else onClose(); }} onKeyDown={e => { if (e.target instanceof HTMLVideoElement || e.target instanceof HTMLAudioElement || e.target instanceof HTMLInputElement) return; if (e.key === 'ArrowLeft') step(-1); if (e.key === 'ArrowRight') step(1); if (e.key === 'F2' && !editing) { e.preventDefault(); startRename(); } }}>
+    <header className="preview-header"><button className="icon-button" onClick={onClose} aria-label="Close preview"><X size={22}/></button>{editing ? <form className="rename-form" onSubmit={e => { e.preventDefault(); saveRename(); }}><input value={draft} onChange={e => setDraft(e.target.value)} aria-label="File name" maxLength={240} disabled={renaming} autoFocus spellCheck={false} autoCapitalize="none" autoCorrect="off" enterKeyHint="done" onFocus={e => { const dot = e.target.value.lastIndexOf('.'); e.target.setSelectionRange(0, dot > 0 ? dot : e.target.value.length); }} onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false); } }}/><p className={problem ? 'rename-problem' : ''}>{problem || 'Press Enter to save'}</p></form> : <div><h2>{file.name}</h2><p>{bytes(file.size)} · From {file.source} · {new Date(file.created).toLocaleDateString()}</p></div>}{editing ? <><button className="icon-button" onClick={saveRename} disabled={renaming} aria-label="Save name">{renaming ? <LoaderCircle className="spin" size={19}/> : <Check size={20}/>}</button><button className="icon-button" onClick={() => setEditing(false)} disabled={renaming} aria-label="Cancel rename"><X size={19}/></button></> : <button className="icon-button" onClick={startRename} aria-label={`Rename ${file.name}`} title="Rename"><Pencil size={18}/></button>}<button className="primary" disabled={!file.ready || busy} onClick={onDownload}>{busy ? <LoaderCircle className="spin" size={18}/> : <ArrowDownToLine size={18}/>}<span>{busy ? 'Saving…' : 'Download'}</span></button></header>
     <div className={`preview-stage ${zoom ? 'zoomed' : ''}`} onTouchStart={e => touch.current = e.touches.length === 1 ? e.touches[0].clientX : null} onTouchEnd={e => { if (type === 'Images' && !zoom && touch.current !== null && Math.abs(e.changedTouches[0].clientX - touch.current) > 70) step(e.changedTouches[0].clientX < touch.current ? 1 : -1); touch.current = null; }}>
       {!file.ready ? <div className="preview-message"><Upload size={48}/><h2>This file is still transferring</h2><p>Close this preview and open it when the transfer finishes.</p></div> : failed ? <div className="preview-message"><CircleAlert size={44}/><h2>Preview unavailable</h2><p>This device can’t display this format, or your PC is offline. Download the original to open it in another app.</p><button className="primary" onClick={onDownload}>Download original</button></div> : type === 'Images' ? <img key={file.id} src={mediaUrl(connection, file)} alt={file.name} onError={() => setFailed(true)} onClick={() => setZoom(!zoom)}/> : type === 'Videos' ? <video key={file.id} controls autoPlay playsInline preload="metadata" src={mediaUrl(connection, file)} onError={() => setFailed(true)}/> : file.mime.startsWith('audio/') ? <div className="preview-message"><Music size={50}/><audio key={file.id} controls src={mediaUrl(connection, file)} onError={() => setFailed(true)}/></div> : <div className="preview-message"><FileText size={56} strokeWidth={1.2}/><h2>{file.name.split('.').pop()?.toUpperCase()} document</h2><p>Save this file to open it in PowerPoint, a PDF reader, or another app.</p><button className="primary" onClick={onDownload}><ArrowDownToLine size={18}/>Download file</button></div>}
     </div>

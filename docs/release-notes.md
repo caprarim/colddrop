@@ -1,3 +1,9 @@
+ColdDrop 1.1.0
+
+- Rename any file from its preview. The new name appears on both devices and is used when saving a copy.
+- Faster phone uploads: larger chunks, reused connections, and file data streamed straight to the PC.
+- Smoother gallery with large libraries: tiles only redraw when their file changes, and bursts of updates are merged into one refresh.
+
 ColdDrop 1.0.0 packages an Android app and a Tauri Windows app for one shared gallery over private Wi-Fi.
 
 - Add large files from either device; originals are stored on the Windows PC.

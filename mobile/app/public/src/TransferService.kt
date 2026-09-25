@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class TransferService : Service() {
-    companion object { @Volatile var running = false; private const val CHANNEL = "transfers"; private const val NOTIFICATION = 71; private const val CHUNK = 4 * 1024 * 1024 }
+    companion object { @Volatile var running = false; private const val CHANNEL = "transfers"; private const val NOTIFICATION = 71; private const val CHUNK = 8L * 1024 * 1024; private const val BUFFER = 512 * 1024 }
     private val executor = Executors.newSingleThreadExecutor()
     private val cancelled = AtomicBoolean(false)
     private var wake: PowerManager.WakeLock? = null
@@ -91,15 +91,15 @@ class TransferService : Service() {
         var stream: InputStream? = null
         try {
             stream = source(job, offset)
-            val buffer = ByteArray(CHUNK); var failures = 0
+            val buffer = ByteArray(BUFFER); var failures = 0
             progress(job, offset, true)
             while (offset < size) {
                 ensureActive()
-                val need = minOf(CHUNK.toLong(), size - offset).toInt(); var count = 0
-                while (count < need) { val n = stream!!.read(buffer, count, need - count); if (n < 0) throw EOFException("The original file changed or could not be read."); count += n }
+                val need = minOf(CHUNK, size - offset)
                 try {
-                    val response = Network.request(job, "/api/uploads/$id?offset=$offset", "PUT", buffer, count, "application/octet-stream")
+                    val response = send(job, "/api/uploads/$id?offset=$offset", stream!!, need, buffer, offset)
                     offset = response.getLong("offset"); failures = 0; progress(job, offset)
+                } catch (e: SourceChanged) { throw e
                 } catch (e: Exception) {
                     ensureActive(); if (++failures >= 5) throw e
                     stream?.close(); stream = null
@@ -114,6 +114,22 @@ class TransferService : Service() {
         ensureActive()
         Network.request(job, "/api/uploads/$id/complete", "POST")
         progress(job, size, true)
+    }
+    private fun send(job: JSONObject, path: String, input: InputStream, length: Long, buffer: ByteArray, start: Long): JSONObject {
+        val connection = Network.open(job, path, "PUT")
+        try {
+            connection.doOutput = true; connection.setFixedLengthStreamingMode(length); connection.setRequestProperty("Content-Type", "application/octet-stream")
+            connection.outputStream.use { output ->
+                var sent = 0L
+                while (sent < length) {
+                    ensureActive()
+                    val n = input.read(buffer, 0, minOf(buffer.size.toLong(), length - sent).toInt())
+                    if (n < 0) throw SourceChanged()
+                    output.write(buffer, 0, n); sent += n; progress(job, start + sent)
+                }
+            }
+            return Network.result(connection)
+        } catch (e: Exception) { connection.disconnect(); throw e }
     }
     private fun thumbnail(job: JSONObject): ByteArray? {
         val mime = job.optString("mime"); val uri = Uri.parse(job.getString("uri"))
@@ -161,3 +177,5 @@ class TransferService : Service() {
     }
     override fun onDestroy() { cancelled.set(true); running = false; executor.shutdownNow(); wake?.let { if (it.isHeld) it.release() }; stopForeground(STOP_FOREGROUND_REMOVE); super.onDestroy() }
 }
+
+private class SourceChanged : IOException("The original file changed or could not be read.")
