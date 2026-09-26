@@ -8,9 +8,9 @@ A shared file gallery for Android and Windows, built for large videos. Add origi
 
 The binaries are committed in [`artifacts`](artifacts/) and attached to the private GitHub release:
 
-- [`ColdDrop-1.2.0.apk`](artifacts/ColdDrop-1.2.0.apk): Android 10 or newer. Download on the phone and allow installation from the browser or file manager when Android asks.
-- [`ColdDrop-1.2.0-setup.exe`](artifacts/ColdDrop-1.2.0-setup.exe): Windows installer, x64. WebView2 is installed by the installer if needed.
-- [`ColdDrop-1.2.0-portable.exe`](artifacts/ColdDrop-1.2.0-portable.exe): standalone Windows app; requires the WebView2 runtime already installed.
+- [`ColdDrop-1.3.0.apk`](artifacts/ColdDrop-1.3.0.apk): Android 10 or newer. Download on the phone and allow installation from the browser or file manager when Android asks.
+- [`ColdDrop-1.3.0-setup.exe`](artifacts/ColdDrop-1.3.0-setup.exe): Windows installer, x64. WebView2 is installed by the installer if needed.
+- [`ColdDrop-1.3.0-portable.exe`](artifacts/ColdDrop-1.3.0-portable.exe): standalone Windows app; requires the WebView2 runtime already installed.
 
 The Windows executables are not code-signed. The APK is signed with a locally generated private release key; that key and its passwords are excluded from Git.
 
@@ -22,7 +22,8 @@ The Windows executables are not code-signed. The APK is signed with a locally ge
 4. Tap **Add files** on either device. Desktop also accepts dropped files. The new gallery entry appears when the upload starts; previews and downloads become available when the original finishes transferring.
 5. Tap a thumbnail to preview. Images support tap-to-zoom, swipe between files, and previous/next controls. Videos support playback and seeking. Use **Download** to choose where to save a copy.
 6. To rename a file, open it and tap the pencil next to its name, type the new name, and press Enter. On the PC, F2 also starts renaming. The new name shows on both devices and is used for downloads.
-7. Group files with categories. In any tab, tap **New category** and name it (for example, hooks). Open a category and use **Add here** to put new files straight in, or open any file and tap the folder button to move it into a category. Deleting a category keeps its files in your library.
+7. Group files with categories. In any tab, tap **New category** and name it (for example, hooks). Open a category and use **Add here** to put new files straight in, or open any file and tap the folder button to move it into a category. When you delete a category you choose to keep its files or delete them too.
+8. Delete anything. On the phone, tap the three dots under a file and choose **Delete**, or press and hold files to select several, then tap the bin. On the PC, hover a file and click the bin, tick several with the circle in the corner (Ctrl+A selects all, the Delete key removes them), or use the bin in the preview. Every delete shows **Undo** for five seconds, then the originals are removed from the PC for good.
 
 Closing the Windows window hides it in the system tray and leaves sharing active. **Quit ColdDrop** in the tray menu stops the server. The app does not start automatically with Windows.
 
@@ -35,6 +36,7 @@ Android uploads continue in a foreground service with a notification. If Android
 - Upload chunks are 4 MiB. The server accepts files up to 16 TiB, subject to filesystem limits and available disk space. It never buffers an entire video in memory.
 - Completed gallery changes are pushed over server-sent events. A 15-second refresh also provides fallback updates. Transfer time still depends on the original size, Wi-Fi, disk speed, and device performance; it is not instantaneous.
 - Video requests support HTTP byte ranges for streaming and seeking. Images and videos receive smaller cached thumbnails where decoding is supported. A device's supported codecs determine which originals it can preview. Unsupported formats remain downloadable.
+- On Android, thumbnails and previews are loaded through the app itself instead of straight from the web view, and thumbnails are cached on the phone, so the gallery shows pictures and videos like the PC does.
 - Uploading from Windows copies a file into the shared library. Uploading from Android stores it on the PC. Downloading explicitly makes a separate copy on the destination device.
 
 ## Connection troubleshooting

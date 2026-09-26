@@ -1,3 +1,11 @@
+ColdDrop 1.3.0
+
+- Delete anything: single files, many files at once, and categories with or without their files. Every file delete can be undone for five seconds.
+- Phone gallery now shows image and video thumbnails and previews.
+- New phone layout: app bar, bottom tab bar, compact photo grid, filter chips, bottom sheets, press and hold to select, and a floating add button. Large screens get a side rail.
+- Faster tab switching: every tab stays loaded, keeps its scroll position, and fades in.
+- PC: hover a file for select and delete, select all with Ctrl+A, delete with the Delete key, and clear finished transfers.
+
 ColdDrop 1.2.0
 
 - Categories: create, rename, and delete your own folders from any tab, add files straight into one, or move any file in from its preview.

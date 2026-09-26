@@ -40,6 +40,12 @@ struct Change { #[serde(default)] name: Option<String>, #[serde(default)] catego
 struct Access { #[serde(default)] offset: u64, #[serde(default)] download: bool }
 #[derive(Serialize)]
 struct Upload { id: String, offset: u64, ready: bool }
+#[derive(Deserialize)]
+struct Removal { ids: Vec<String> }
+#[derive(Serialize)]
+struct Removed { deleted: usize }
+#[derive(Deserialize)]
+struct CategoryRemoval { #[serde(default)] files: bool }
 
 pub struct Library {
     pub root: PathBuf, pub key: String,
@@ -72,8 +78,20 @@ impl Library {
             if item.category.as_ref().is_some_and(|c| !categories.iter().any(|x| &x.id == c)) { item.category = None; }
             files.insert(item.id.clone(), item);
         }
+        Self::sweep(&root).await;
         let (events, _) = broadcast::channel(256);
         Ok(Arc::new(Self { root, key, files: RwLock::new(files), categories: RwLock::new(categories), locks: Mutex::new(HashMap::new()), events }))
+    }
+    async fn sweep(root: &std::path::Path) {
+        for (folder, extensions) in [("files", &["bin", "part"][..]), ("thumbnails", &["jpg"][..]), ("metadata", &["tmp"][..])] {
+            let Ok(mut entries) = fs::read_dir(root.join(folder)).await else { continue };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let (Some(stem), Some(extension)) = (path.file_stem().and_then(|v| v.to_str()), path.extension().and_then(|v| v.to_str())) else { continue };
+                if !extensions.contains(&extension) || uuid::Uuid::parse_str(stem).is_err() { continue; }
+                if extension == "tmp" || !root.join("metadata").join(format!("{stem}.json")).exists() { let _ = fs::remove_file(&path).await; }
+            }
+        }
     }
     pub fn binary(&self, id: &str) -> PathBuf { self.root.join("files").join(format!("{id}.bin")) }
     fn partial(&self, id: &str) -> PathBuf { self.root.join("files").join(format!("{id}.part")) }
@@ -93,6 +111,27 @@ impl Library {
         let temp = path.with_extension("tmp");
         fs::write(&temp, serde_json::to_vec(list).map_err(ioerr)?).await.map_err(ioerr)?;
         fs::rename(temp, path).await.map_err(ioerr)
+    }
+    async fn remove(&self, id: &str) -> ApiResult<bool> {
+        if !self.files.read().await.contains_key(id) { return Ok(false); }
+        let lock = self.lock(id).await; let _guard = lock.lock().await;
+        if !self.files.read().await.contains_key(id) { return Ok(false); }
+        match fs::remove_file(self.root.join("metadata").join(format!("{id}.json"))).await {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(ioerr(e)),
+        }
+        self.files.write().await.remove(id);
+        for path in [self.binary(id), self.partial(id), self.root.join("thumbnails").join(format!("{id}.jpg"))] { let _ = fs::remove_file(path).await; }
+        self.locks.lock().await.remove(id);
+        Ok(true)
+    }
+    async fn remove_all(&self, ids: &[String]) -> ApiResult<usize> {
+        let mut deleted = 0;
+        let mut failure = None;
+        for id in ids { match self.remove(id).await { Ok(true) => deleted += 1, Ok(false) => {}, Err(e) => failure = Some(e) } }
+        if deleted > 0 { self.changed(); }
+        match failure { Some(e) if deleted == 0 => Err(e), _ => Ok(deleted) }
     }
     async fn record(&self, id: &str) -> ApiResult<FileRecord> {
         self.files.read().await.get(id).cloned().ok_or((StatusCode::NOT_FOUND, "File not found".into()))
@@ -135,7 +174,8 @@ pub async fn serve(state: Arc<Library>, listener: tokio::net::TcpListener) -> st
         .route("/api/uploads", post(create))
         .route("/api/uploads/{id}", get(status).put(chunk))
         .route("/api/uploads/{id}/complete", post(complete))
-        .route("/api/files/{id}", patch(update))
+        .route("/api/files/delete", post(delete_many))
+        .route("/api/files/{id}", patch(update).delete(delete_one))
         .route("/api/categories", post(add_category))
         .route("/api/categories/{id}", patch(rename_category).delete(remove_category))
         .route("/api/files/{id}/thumbnail", put(thumbnail).get(get_thumbnail))
@@ -171,7 +211,20 @@ async fn rename_category(State(s): State<Arc<Library>>, Path(id): Path<String>, 
     s.save_categories(&next).await?; *list = next; drop(list);
     s.changed(); Ok(Json(result))
 }
-async fn remove_category(State(s): State<Arc<Library>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+async fn delete_one(State(s): State<Arc<Library>>, Path(id): Path<String>) -> ApiResult<StatusCode> {
+    if s.remove_all(&[id]).await? == 0 { return Err((StatusCode::NOT_FOUND, "File not found".into())); }
+    Ok(StatusCode::NO_CONTENT)
+}
+async fn delete_many(State(s): State<Arc<Library>>, Json(args): Json<Removal>) -> ApiResult<Json<Removed>> {
+    if args.ids.len() > 100_000 { return Err(bad("Too many files in one request")); }
+    Ok(Json(Removed { deleted: s.remove_all(&args.ids).await? }))
+}
+async fn remove_category(State(s): State<Arc<Library>>, Path(id): Path<String>, Query(args): Query<CategoryRemoval>) -> ApiResult<StatusCode> {
+    if !s.has_category(&id).await { return Err((StatusCode::NOT_FOUND, "Category not found".into())); }
+    if args.files {
+        let members: Vec<String> = s.files.read().await.values().filter(|f| f.category.as_deref() == Some(id.as_str())).map(|f| f.id.clone()).collect();
+        s.remove_all(&members).await?;
+    }
     {
         let mut list = s.categories.write().await;
         let next: Vec<Category> = list.iter().filter(|c| c.id != id).cloned().collect();

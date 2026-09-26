@@ -79,6 +79,7 @@ class TransferService : Service() {
     private fun upload(job: JSONObject) {
         job.put("status", "uploading"); TransferStore.put(this, job)
         var id = job.optString("uploadId")
+        if (id.isNotEmpty()) { try { Network.request(job, "/api/uploads/$id") } catch (e: IOException) { if (e.message?.contains("File not found") == true) { id = ""; job.remove("uploadId") } else throw e } }
         if (id.isEmpty()) {
             val payload = JSONObject().put("name", job.getString("name")).put("size", job.getLong("size")).put("source", "Phone").put("category", job.optString("category")).toString().toByteArray(Charsets.UTF_8)
             id = Network.request(job, "/api/uploads", "POST", payload).getString("id")

@@ -17,6 +17,12 @@ object TransferStore {
     }
     @Synchronized fun queued(context: Context): JSONObject? { val jobs = all(context); for (i in jobs.length() - 1 downTo 0) { val j = jobs.getJSONObject(i); if (j.optString("status") == "queued") return j }; return null }
     @Synchronized fun retry(context: Context, id: String) { val jobs = all(context); for (i in 0 until jobs.length()) { val j = jobs.getJSONObject(i); if (j.getString("id") == id && j.optString("status") == "failed") { j.put("status", "queued").remove("error"); put(context, j) } } }
+    @Synchronized fun clearFinished(context: Context): JSONArray {
+        val jobs = all(context); val kept = JSONArray()
+        for (i in 0 until jobs.length()) { val j = jobs.getJSONObject(i); if (j.optString("status") !in listOf("complete", "failed")) kept.put(j) }
+        context.getSharedPreferences("transfers", Context.MODE_PRIVATE).edit().putString("jobs", kept.toString()).commit()
+        return kept
+    }
     @Synchronized fun recover(context: Context) {
         if (TransferService.running) return
         val jobs = all(context)

@@ -6,14 +6,17 @@ export type Category = { id: string; name: string; created: number };
 export type Transfer = { id: string; name: string; size: number; sent: number; status: 'queued' | 'uploading' | 'downloading' | 'complete' | 'failed'; error?: string };
 declare global {
   interface Window {
-    ColdDrop?: { connection(): string; saveConnection(value: string): void; pickFiles(): void; pickFilesInto?(category: string): void; scan(): void; download(id: string, name: string, mime: string): void; transfers(): string; retry(id: string): void; disconnect(): void };
+    ColdDrop?: { connection(): string; saveConnection(value: string): void; pickFiles(): void; pickFilesInto?(category: string): void; scan(): void; download(id: string, name: string, mime: string): void; transfers(): string; retry(id: string): void; disconnect(): void; clearTransfers?(): string; haptic?(): void; setChrome?(dark: boolean): void };
     onColdDropTransfer?: (value: Transfer) => void;
     onColdDropScan?: (value: string) => void;
     onColdDropError?: (value: string) => void;
     onColdDropResume?: () => void;
+    onColdDropBack?: () => boolean;
   }
 }
 export const desktop = isTauri();
+export const phone = !desktop;
+const proxied = !desktop && !!window.ColdDrop && location.origin === 'https://appassets.androidplatform.net';
 export async function boot(): Promise<Connection | null> {
   if (desktop) return invoke<Connection>('connection');
   const raw = window.ColdDrop?.connection() || localStorage.getItem('colddrop-connection');
@@ -21,11 +24,18 @@ export async function boot(): Promise<Connection | null> {
 }
 export const url = (c: Connection, path: string) => `${c.base}${path}${path.includes('?') ? '&' : '?'}key=${encodeURIComponent(c.key)}`;
 export const mediaUrl = (c: Connection, f: GalleryFile) => url(c, `/api/files/${f.id}/content`);
+export function sources(c: Connection, f: GalleryFile, part: 'content' | 'thumbnail'): string[] {
+  const path = `/api/files/${f.id}/${part}`;
+  return proxied ? [`${location.origin}/pc${path}?b=${encodeURIComponent(c.base)}`, url(c, path)] : [url(c, path)];
+}
 export async function request<T>(c: Connection, path: string, options: RequestInit = {}): Promise<T> {
   const result = await fetch(`${c.base}${path}`, { ...options, headers: { Authorization: `Bearer ${c.key}`, ...options.headers }, signal: options.signal ?? AbortSignal.timeout(10000) });
   if (!result.ok) throw new Error((await result.text()).slice(0, 240) || `Request failed (${result.status})`);
   return result.status === 204 ? undefined as T : result.json();
 }
+const json = { 'Content-Type': 'application/json' };
+export const deleteFiles = (c: Connection, ids: string[]) => request<{ deleted: number }>(c, '/api/files/delete', { method: 'POST', headers: json, body: JSON.stringify({ ids }), signal: AbortSignal.timeout(60000) });
+export const deleteCategory = (c: Connection, id: string, files: boolean) => request<void>(c, `/api/categories/${id}${files ? '?files=true' : ''}`, { method: 'DELETE', signal: AbortSignal.timeout(60000) });
 export function parsePairing(input: string): Connection {
   const link = new URL(input.trim());
   let base: string, key: string;
@@ -49,7 +59,7 @@ export async function browserUpload(c: Connection, file: File, report: (t: Trans
     catch (error) { if (String(error).includes('File not found')) { id = ''; } else throw error; }
   }
   if (!id) {
-    const created = await request<{ id: string }>(c, '/api/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: file.name, size: file.size, source: desktop ? 'PC' : 'Phone', category: category ?? '' }) });
+    const created = await request<{ id: string }>(c, '/api/uploads', { method: 'POST', headers: json, body: JSON.stringify({ name: file.name, size: file.size, source: desktop ? 'PC' : 'Phone', category: category ?? '' }) });
     id = created.id; localStorage.setItem(fingerprint, id);
   }
   const progress = (status: Transfer['status'], error?: string) => report({ id, name: file.name, size: file.size, sent: offset, status, error });

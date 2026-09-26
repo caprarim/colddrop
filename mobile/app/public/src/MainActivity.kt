@@ -8,8 +8,13 @@ import android.net.Uri
 import android.webkit.*
 import android.provider.OpenableColumns
 import android.Manifest
+import android.graphics.Color
+import android.view.HapticFeedbackConstants
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowInsetsController
+import android.widget.FrameLayout
 import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 import com.google.zxing.integration.android.IntentIntegrator
@@ -18,6 +23,8 @@ import java.util.UUID
 
 class MainActivity : Activity() {
     private lateinit var web: WebView
+    private lateinit var root: FrameLayout
+    private var fullscreen: WebChromeClient.CustomViewCallback? = null
     private var pendingPair: String? = null
     private var pendingDownload: JSONObject? = null
     @Volatile private var pendingCategory = ""
@@ -34,18 +41,27 @@ class MainActivity : Activity() {
         pendingCategory = savedInstanceState?.getString("category") ?: ""
         val loader = WebViewAssetLoader.Builder().addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this)).build()
         web = WebView(this)
-        web.setBackgroundColor(android.graphics.Color.WHITE)
+        web.setBackgroundColor(Color.WHITE)
+        web.overScrollMode = View.OVER_SCROLL_NEVER
+        web.isHapticFeedbackEnabled = true
         web.settings.apply {
             javaScriptEnabled = true; domStorageEnabled = true
             allowFileAccess = false; allowContentAccess = false
             mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             mediaPlaybackRequiresUserGesture = false
             setSupportMultipleWindows(false)
+            setSupportZoom(false); builtInZoomControls = false; displayZoomControls = false
+            offscreenPreRaster = true
+            textZoom = (minOf(resources.configuration.fontScale, 1.15f) * 100).toInt()
         }
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, false)
         web.addJavascriptInterface(Bridge(), "ColdDrop")
         web.webViewClient = object : WebViewClient() {
-            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? = loader.shouldInterceptRequest(request.url)
+            override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+                val url = request.url
+                if (url.host == "appassets.androidplatform.net" && url.path?.startsWith("/pc/") == true) return MediaProxy.handle(this@MainActivity, prefs.getString("connection", "") ?: "", request)
+                return loader.shouldInterceptRequest(url)
+            }
             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = request.url.host != "appassets.androidplatform.net"
             override fun onPageFinished(view: WebView, url: String) {
                 pageReady = true
@@ -54,17 +70,24 @@ class MainActivity : Activity() {
         }
         web.webChromeClient = object : WebChromeClient() {
             private var custom: View? = null
-            override fun onShowCustomView(view: View, callback: CustomViewCallback) { custom = view; setContentView(view) }
-            override fun onHideCustomView() { custom = null; setContentView(web) }
+            override fun onShowCustomView(view: View, callback: CustomViewCallback) { custom = view; fullscreen = callback; root.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)) }
+            override fun onHideCustomView() { custom?.let { root.removeView(it) }; custom = null; fullscreen = null }
         }
-        setContentView(web)
+        root = FrameLayout(this)
+        root.setBackgroundColor(Color.WHITE)
+        root.addView(web, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        setContentView(root)
         if (Build.VERSION.SDK_INT >= 30) {
             window.setDecorFitsSystemWindows(false)
-            web.setOnApplyWindowInsetsListener { view, insets ->
-                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout() or WindowInsets.Type.ime())
-                view.setPadding(bars.left, bars.top, bars.right, bars.bottom); insets
+            @Suppress("DEPRECATION") run { window.statusBarColor = Color.TRANSPARENT; window.navigationBarColor = Color.TRANSPARENT }
+            root.setOnApplyWindowInsetsListener { view, insets ->
+                val bars = insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.displayCutout())
+                val ime = insets.getInsets(WindowInsets.Type.ime())
+                view.setPadding(bars.left, bars.top, bars.right, maxOf(bars.bottom, ime.bottom)); WindowInsets.CONSUMED
             }
         }
+        chrome(false)
+        Thread { try { MediaProxy.trim(this) } catch (_: Exception) {} }.start()
         ContextCompat.registerReceiver(this, receiver, IntentFilter(TransferStore.ACTION), ContextCompat.RECEIVER_NOT_EXPORTED)
         pendingPair = intent?.dataString?.takeIf { it.startsWith("colddrop://pair") }
         web.loadUrl("https://appassets.androidplatform.net/assets/index.html")
@@ -76,7 +99,24 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) { pendingDownload?.let { outState.putString("download", it.toString()) }; outState.putString("category", pendingCategory); super.onSaveInstanceState(outState) }
     override fun onDestroy() { unregisterReceiver(receiver); web.removeJavascriptInterface("ColdDrop"); web.destroy(); super.onDestroy() }
     @Deprecated("Android legacy back dispatch")
-    override fun onBackPressed() { web.evaluateJavascript("(function(){const all=document.querySelectorAll('dialog[open]');const d=all[all.length-1];if(d){d.dispatchEvent(new Event('cancel',{cancelable:true}));return true;}return false;})()") { consumed -> if (consumed != "true") moveTaskToBack(true) } }
+    override fun onBackPressed() {
+        fullscreen?.let { it.onCustomViewHidden(); return }
+        web.evaluateJavascript("(function(){try{if(window.onColdDropBack)return !!window.onColdDropBack();const all=document.querySelectorAll('dialog[open]');const d=all[all.length-1];if(d){d.dispatchEvent(new Event('cancel',{cancelable:true}));return true;}}catch(e){}return false;})()") { consumed -> if (consumed != "true") moveTaskToBack(true) }
+    }
+    private fun chrome(dark: Boolean) {
+        val shade = Color.rgb(18, 18, 20)
+        root.setBackgroundColor(if (dark) shade else Color.WHITE)
+        if (Build.VERSION.SDK_INT >= 30) {
+            val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (dark) 0 else light, light)
+        } else {
+            @Suppress("DEPRECATION") run {
+                window.statusBarColor = if (dark) shade else Color.WHITE
+                window.navigationBarColor = if (dark) shade else Color.WHITE
+                window.decorView.systemUiVisibility = if (dark) 0 else View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            }
+        }
+    }
     private fun error(message: String) { runOnUiThread { web.evaluateJavascript("window.onColdDropError?.(${JSONObject.quote(message)})", null) } }
     private fun startTransfers() { try { ContextCompat.startForegroundService(this, Intent(this, TransferService::class.java)) } catch (e: Exception) { error(e.message ?: "Open ColdDrop to start the transfer") } }
 
@@ -102,6 +142,9 @@ class MainActivity : Activity() {
             }
         }
         @JavascriptInterface fun retry(id: String) { runOnUiThread { TransferStore.retry(this@MainActivity, id); startTransfers() } }
+        @JavascriptInterface fun clearTransfers(): String = TransferStore.clearFinished(this@MainActivity).toString()
+        @JavascriptInterface fun haptic() { runOnUiThread { web.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS) } }
+        @JavascriptInterface fun setChrome(dark: Boolean) { runOnUiThread { chrome(dark) } }
     }
     @Deprecated("File and QR activity results")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
